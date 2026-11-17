@@ -43,27 +43,35 @@ def tag_article(a: Article) -> Article:
 
 
 def _norm_title(t: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", "", t.lower())
+    # \w is Unicode-aware, so non-Latin titles keep their letters instead of becoming "".
+    return " ".join(re.sub(r"[^\w\s]|_", " ", t.casefold()).split())
+
+
+def _same_story(a: Article, title_a: str, b: Article, title_b: str, threshold: float) -> bool:
+    if not title_a or not title_b:
+        return False                        # nothing meaningful to compare
+    if (a.cves or b.cves) and set(a.cves) != set(b.cves):
+        return False                        # different vulnerabilities are different stories
+    return SequenceMatcher(None, title_a, title_b).ratio() >= threshold
 
 
 def dedupe(articles: list[Article], threshold: float = 0.85) -> list[Article]:
     """Remove repeats: same URL, or near-identical titles across sources.
 
-    Keeps the first occurrence, so sort by preference (e.g. newest) beforehand.
+    Articles must already be tagged (CVEs extracted). Keeps the first
+    occurrence, so sort by preference (e.g. newest) beforehand.
     """
     seen_urls: set[str] = set()
-    kept: list[Article] = []
-    kept_titles: list[str] = []
+    kept: list[tuple[Article, str]] = []
     for a in articles:
         if a.url in seen_urls:
             continue
         nt = _norm_title(a.title)
-        if any(SequenceMatcher(None, nt, kt).ratio() >= threshold for kt in kept_titles):
+        if any(_same_story(a, nt, k, kt, threshold) for k, kt in kept):
             continue
         seen_urls.add(a.url)
-        kept_titles.append(nt)
-        kept.append(a)
-    return kept
+        kept.append((a, nt))
+    return [a for a, _ in kept]
 
 
 def filter_articles(

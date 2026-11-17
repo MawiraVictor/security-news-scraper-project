@@ -1,10 +1,12 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from secnews import cli
+from secnews import cli, fetch
 from secnews.classify import dedupe, extract_cves, filter_articles, sort_newest, tag_article
+from secnews.fetch import BlockedURL, FeedResult, fetch_all, is_public_url, safe_get
 from secnews.models import Article, Source
 from secnews.parse import clean_html, meta_description, normalize_url, parse_feed
 from secnews.render import FORMATS, render
@@ -192,8 +194,8 @@ def test_load_sources_file(tmp_path):
 def fake_network(monkeypatch):
     feeds = {"Test RSS": RSS, "Test Atom": ATOM}
     monkeypatch.setattr(cli, "DEFAULT_SOURCES", [Source(n, f"https://{n}.test/feed") for n in feeds])
-    monkeypatch.setattr(cli, "fetch_all", lambda session, sources, workers: {
-        s.name: feeds[s.name] for s in sources if s.name in feeds})
+    monkeypatch.setattr(cli, "fetch_all", lambda session, sources, workers: [
+        FeedResult(s, feeds[s.name], s.url) for s in sources if s.name in feeds])
 
 
 def test_cli_end_to_end(fake_network, capsys, tmp_path):
@@ -224,3 +226,125 @@ def test_cli_errors(fake_network, monkeypatch, capsys):
         cli.main(["--new-only"])                      # needs --db
     monkeypatch.setattr(cli, "fetch_all", lambda *a: {})
     assert cli.main([]) == 1                          # nothing fetched
+
+
+# ---------------------------------------------------------------- review regressions (PR #3)
+
+def _feed_with_link(link: str, title: str = "Story") -> bytes:
+    return f"""<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+<item><title>{title}</title><link>{link}</link></item></channel></rss>""".encode()
+
+
+@pytest.mark.parametrize("link", ["javascript:alert(document.cookie)", "data:text/html,hi", "ftp://x.test/a"])
+def test_non_web_links_are_dropped(link):
+    assert parse_feed(_feed_with_link(link), "T") == []
+
+
+def test_renderers_never_emit_unsafe_hrefs():
+    a = art("Click me", url="javascript:alert(1)")
+    assert "javascript:" not in render([a], "html")
+    assert "javascript:" not in render([a], "markdown")
+
+
+def test_markdown_escapes_text_and_url():
+    a = art("Bad [title](x) <img src=x onerror=alert(1)>", url="https://x.test/a_(b) c")
+    md = render([a], "markdown")
+    heading = [l for l in md.splitlines() if l.startswith("### ")][0]
+    assert heading.endswith("(<https://x.test/a_(b)%20c>)")
+    assert "\\<img" in md
+    assert not re.search(r"(?<!\\)<img", md)          # every '<' before img is escaped
+    assert "\\[title\\]" in heading
+
+
+def test_relative_links_resolved_against_feed_url():
+    [a] = parse_feed(_feed_with_link("/news/story-1"), "T", base_url="https://site.test/feeds/rss")
+    assert a.url == "https://site.test/news/story-1"
+    assert parse_feed(_feed_with_link("/news/story-1"), "T") == []   # no base -> unusable, dropped
+
+
+def test_blank_query_values_preserved():
+    assert normalize_url("https://x.test/story?edition=&utm_source=a") == "https://x.test/story?edition="
+
+
+def test_dedupe_keeps_distinct_non_latin_titles():
+    items = [art("安全漏洞", url="https://a/1"), art("数据泄露", url="https://a/2")]
+    assert len(dedupe(items)) == 2
+
+
+def test_dedupe_keeps_advisories_with_different_cves():
+    items = [tag_article(art("Security update fixes CVE-2025-1234", url="https://a/1")),
+             tag_article(art("Security update fixes CVE-2025-1235", url="https://a/2"))]
+    assert len(dedupe(items)) == 2
+
+
+def test_fetch_all_keeps_feeds_with_duplicate_names(monkeypatch):
+    class Resp:
+        def __init__(self, url): self.url, self.content = url, url.encode()
+        def raise_for_status(self): pass
+    class Sess:
+        def get(self, url, timeout): return Resp(url)
+    srcs = [Source("News", "https://a.test/feed"), Source("News", "https://b.test/feed")]
+    results = fetch_all(Sess(), srcs, workers=2)
+    assert [r.body for r in results] == [b"https://a.test/feed", b"https://b.test/feed"]
+
+
+def _fake_dns(monkeypatch, table):
+    def getaddrinfo(host, port, proto=0):
+        if host not in table:
+            raise fetch.socket.gaierror("unknown")
+        return [(2, 1, 6, "", (ip, 0)) for ip in table[host]]
+    monkeypatch.setattr(fetch.socket, "getaddrinfo", getaddrinfo)
+
+
+def test_is_public_url_blocks_internal_addresses(monkeypatch):
+    _fake_dns(monkeypatch, {"news.test": ["93.184.216.34"], "meta.test": ["169.254.169.254"],
+                            "lan.test": ["192.168.1.10"], "mixed.test": ["93.184.216.34", "127.0.0.1"]})
+    assert is_public_url("https://news.test/a")
+    for url in ["http://meta.test/latest", "http://lan.test/", "https://mixed.test/",
+                "http://127.0.0.1/", "file:///etc/passwd", "https://nowhere.test/"]:
+        assert not is_public_url(url), url
+
+
+class _Robots:
+    def __init__(self, disallowed=()): self.disallowed = set(disallowed)
+    def allowed(self, url): return url not in self.disallowed
+
+
+class _RedirectSession:
+    def __init__(self, hops): self.hops, self.requested = hops, []
+    def get(self, url, timeout, allow_redirects):
+        assert allow_redirects is False
+        self.requested.append(url)
+        class R:
+            ok = True
+            headers = {"Location": self.hops[url]} if url in self.hops else {"Content-Type": "text/html"}
+            is_redirect = url in self.hops
+            def close(self): pass
+        return R()
+
+
+def test_safe_get_checks_every_redirect_hop(monkeypatch):
+    _fake_dns(monkeypatch, {"news.test": ["93.184.216.34"], "meta.test": ["169.254.169.254"]})
+    s = _RedirectSession({"https://news.test/a": "http://meta.test/latest"})
+    with pytest.raises(BlockedURL):
+        safe_get(s, "https://news.test/a", _Robots())
+    assert s.requested == ["https://news.test/a"]             # internal hop never requested
+
+    s = _RedirectSession({"https://news.test/a": "/private/b"})
+    with pytest.raises(BlockedURL, match="robots"):
+        safe_get(s, "https://news.test/a", _Robots({"https://news.test/private/b"}))
+    assert s.requested == ["https://news.test/a"]
+
+    s = _RedirectSession({"https://news.test/a": "/b"})
+    assert safe_get(s, "https://news.test/a", _Robots()).ok
+    assert s.requested == ["https://news.test/a", "https://news.test/b"]
+
+
+def test_store_search_orders_by_instant_across_timezones(tmp_path):
+    from datetime import timezone as tz
+    plus2 = tz(timedelta(hours=2))
+    older = Article("match older", "https://x/1", "S", datetime(2026, 11, 17, 10, 0, tzinfo=plus2))  # 08:00Z
+    newer = Article("match newer", "https://x/2", "S", datetime(2026, 11, 17, 9, 0, tzinfo=tz.utc))  # 09:00Z
+    with Store(tmp_path / "t.db") as s:
+        s.add_new([older, newer])
+        assert [a.title for a in s.search("match", limit=1)] == ["match newer"]

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import __version__
 from .classify import TAG_RULES, dedupe, filter_articles, sort_newest, tag_article
-from .fetch import RobotsCache, fetch_all, make_session, TIMEOUT
+from .fetch import BlockedURL, RobotsCache, fetch_all, make_session, safe_get
 from .models import Article, Source
 from .parse import meta_description, parse_feed
 from .render import FORMATS, render
@@ -28,13 +28,11 @@ log = logging.getLogger("secnews")
 def collect(sources: list[Source], workers: int = 6, enrich: bool = False) -> list[Article]:
     """Fetch, parse, tag, sort and de-duplicate articles from all sources."""
     session = make_session()
-    raw = fetch_all(session, sources, workers)
     articles: list[Article] = []
-    for src in sources:
-        if src.name in raw:
-            parsed = parse_feed(raw[src.name], src.name)
-            log.info("%s: %d articles", src.name, len(parsed))
-            articles.extend(parsed)
+    for res in fetch_all(session, sources, workers):
+        parsed = parse_feed(res.body, res.source.name, base_url=res.url)
+        log.info("%s: %d articles", res.source.name, len(parsed))
+        articles.extend(parsed)
     if enrich:
         fill_missing_summaries(session, articles, workers)
     articles = [tag_article(a) for a in articles]
@@ -42,18 +40,20 @@ def collect(sources: list[Source], workers: int = 6, enrich: bool = False) -> li
 
 
 def fill_missing_summaries(session, articles: list[Article], workers: int) -> None:
-    """For articles whose feed had no summary, read the page's meta description (robots.txt permitting)."""
+    """For articles whose feed had no summary, read the page's meta description.
+
+    Only public http(s) addresses are fetched, and robots.txt is checked on every redirect hop.
+    """
     robots = RobotsCache(session)
     todo = [a for a in articles if not a.summary]
 
     def work(a: Article):
-        if not robots.allowed(a.url):
-            log.info("robots.txt disallows %s", a.url)
-            return
         try:
-            r = session.get(a.url, timeout=TIMEOUT)
+            r = safe_get(session, a.url, robots)
             if r.ok and "html" in r.headers.get("Content-Type", ""):
                 a.summary = meta_description(r.text)
+        except BlockedURL as e:
+            log.info("skipped %s", e)
         except Exception as e:  # noqa: BLE001 - enrichment is best-effort
             log.info("could not enrich %s (%s)", a.url, e)
 

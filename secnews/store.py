@@ -1,10 +1,19 @@
 """SQLite archive of every article seen, so repeated runs can report only what's new."""
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Article
+
+
+def _utc_iso(dt: datetime | None) -> str | None:
+    """Store every timestamp in UTC so text order matches time order."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS articles (
@@ -46,7 +55,7 @@ class Store:
                     """INSERT OR IGNORE INTO articles
                        (url, title, source, published, summary, author, cves, tags)
                        VALUES (?,?,?,?,?,?,?,?)""",
-                    (a.url, a.title, a.source, a.published.isoformat() if a.published else None,
+                    (a.url, a.title, a.source, _utc_iso(a.published),
                      a.summary, a.author, json.dumps(a.cves), json.dumps(a.tags)),
                 )
                 if cur.rowcount:
@@ -57,7 +66,7 @@ class Store:
         like = f"%{term}%"
         rows = self.conn.execute(
             """SELECT * FROM articles WHERE title LIKE ? OR summary LIKE ? OR cves LIKE ?
-               ORDER BY published DESC LIMIT ?""",
+               ORDER BY julianday(published) DESC LIMIT ?""",
             (like, like, like, limit),
         ).fetchall()
         return [self._row_to_article(r) for r in rows]

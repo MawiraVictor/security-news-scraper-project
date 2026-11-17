@@ -3,7 +3,7 @@ import logging
 import re
 import warnings
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import feedparser
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
@@ -38,7 +38,8 @@ def clean_html(html: str, limit: int = SUMMARY_MAX) -> str:
 def normalize_url(url: str) -> str:
     """Lower-case scheme/host, drop fragments, tracking params and trailing slashes."""
     parts = urlsplit(url.strip())
-    query = urlencode([(k, v) for k, v in parse_qsl(parts.query) if not _TRACKING_PARAMS.match(k)])
+    query = urlencode([(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                       if not _TRACKING_PARAMS.match(k)])
     path = parts.path.rstrip("/") or "/"
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, query, ""))
 
@@ -59,8 +60,15 @@ def parse_date(entry) -> datetime | None:
     return None
 
 
-def parse_feed(raw: bytes, source_name: str) -> list[Article]:
-    feed = feedparser.parse(raw)
+def is_web_url(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+
+
+def parse_feed(raw: bytes, source_name: str, base_url: str = "") -> list[Article]:
+    """Parse feed bytes. base_url (the feed's final URL) resolves relative article links."""
+    headers = {"content-location": base_url} if base_url else None
+    feed = feedparser.parse(raw, response_headers=headers)
     if feed.bozo and not feed.entries:
         log.warning("%s: could not parse feed (%s)", source_name, feed.get("bozo_exception"))
         return []
@@ -68,9 +76,9 @@ def parse_feed(raw: bytes, source_name: str) -> list[Article]:
     articles = []
     for e in feed.entries:
         title = _WS.sub(" ", BeautifulSoup(e.get("title", ""), "lxml").get_text()).strip()
-        link = e.get("link") or ""
-        if not title or not link:
-            continue
+        link = urljoin(base_url, (e.get("link") or "").strip()) if base_url else (e.get("link") or "").strip()
+        if not title or not is_web_url(link):
+            continue  # skip untitled entries and javascript:/data:/relative-without-base links
         summary_html = e.get("summary") or ""
         if not summary_html and e.get("content"):
             summary_html = e["content"][0].get("value", "")
