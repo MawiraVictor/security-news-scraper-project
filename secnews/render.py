@@ -55,9 +55,15 @@ def to_csv(articles: list[Article]) -> str:
     w = csv.writer(buf)
     w.writerow(["published", "source", "title", "url", "cves", "tags", "summary"])
     for a in articles:
-        w.writerow([a.published.isoformat() if a.published else "", a.source, a.title, a.url,
-                    " ".join(a.cves), " ".join(a.tags), a.summary])
+        w.writerow([a.published.isoformat() if a.published else "", _csv_cell(a.source),
+                    _csv_cell(a.title), _csv_cell(a.url), " ".join(a.cves), " ".join(a.tags),
+                    _csv_cell(a.summary)])
     return buf.getvalue()
+
+
+def _csv_cell(value: str) -> str:
+    """Stop spreadsheets from evaluating feed text as a formula (CSV injection, CWE-1236)."""
+    return "'" + value if value[:1] in ("=", "+", "-", "@", "\t", "\r") else value
 
 
 def _safe_url(url: str) -> str:

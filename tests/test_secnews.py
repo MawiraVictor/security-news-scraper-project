@@ -348,3 +348,11 @@ def test_store_search_orders_by_instant_across_timezones(tmp_path):
     with Store(tmp_path / "t.db") as s:
         s.add_new([older, newer])
         assert [a.title for a in s.search("match", limit=1)] == ["match newer"]
+
+
+def test_csv_neutralises_formulas():
+    import csv as _csv
+    a = art('=HYPERLINK("https://evil.test","click")', summary="+cmd|' /C calc'!A0", source="@src")
+    row = list(_csv.reader(render([a], "csv").splitlines()))[1]
+    assert row[1] == "'@src" and row[2].startswith("'=HYPERLINK") and row[6].startswith("'+cmd")
+    assert list(_csv.reader(render([art("Normal title")], "csv").splitlines()))[1][2] == "Normal title"
