@@ -15,6 +15,10 @@ def _date(a: Article, fmt: str = "%Y-%m-%d %H:%M") -> str:
     return a.published.strftime(fmt) if a.published else "unknown"
 
 
+def _plural(n: int) -> str:
+    return f"{n} article" if n == 1 else f"{n} articles"
+
+
 def render(articles: list[Article], fmt: str) -> str:
     return {
         "table": to_table, "json": to_json, "csv": to_csv,
@@ -36,7 +40,7 @@ def to_table(articles: list[Article]) -> str:
         if extra:
             lines.append("    " + "  ".join(extra))
         lines.append(f"    {a.url}")
-    lines.append(f"\n{len(articles)} article(s)")
+    lines.append(f"\n{_plural(len(articles))}")
     return "\n".join(lines)
 
 
@@ -60,7 +64,7 @@ def _md_escape(s: str) -> str:
 
 def to_markdown(articles: list[Article]) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    out = [f"# Security News Digest", "", f"_Generated {now} · {len(articles)} articles_", ""]
+    out = [f"# Security News Digest", "", f"_Generated {now} · {_plural(len(articles))}_", ""]
     tag_counts = Counter(t for a in articles for t in a.tags)
     if tag_counts:
         out += ["**Top topics:** " + ", ".join(f"{t} ({n})" for t, n in tag_counts.most_common(8)), ""]
@@ -139,7 +143,7 @@ def to_html(articles: list[Article]) -> str:
 <body>
 <main>
   <h1>Security News Digest</h1>
-  <p class="sub">Generated {e(now)} · <span id="count">{len(articles)}</span> articles</p>
+  <p class="sub">Generated {e(now)} · <span id="count">{len(articles)}</span> article(s)</p>
   <div class="chips">{chips}</div>
   {''.join(items) if items else '<p>No articles found.</p>'}
 </main>
