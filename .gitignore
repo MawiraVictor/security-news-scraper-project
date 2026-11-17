@@ -36,3 +36,9 @@ output/
 .idea/
 .DS_Store
 Thumbs.db
+
+# secnews runtime output
+*.db
+digest.*
+.venv/
+

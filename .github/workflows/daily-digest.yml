@@ -1,0 +1,36 @@
+name: daily digest
+
+# Builds a digest of the last 24 hours of security news every morning
+# (06:00 UTC = 09:00 Nairobi) and attaches it to the workflow run.
+# Download it from the run's "Artifacts" section.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Build digest
+        run: |
+          mkdir -p digest
+          secnews -v --since 24 -f html     -o digest/index.html
+          secnews    --since 24 -f markdown -o digest/digest.md
+          secnews    --since 24 -f json     -o digest/digest.json
+          cat digest/digest.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-digest-${{ github.run_number }}
+          path: digest/
+          retention-days: 14

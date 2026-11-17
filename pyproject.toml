@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secnews"
+dynamic = ["version"]
+description = "Aggregate, tag and de-duplicate cybersecurity news from public RSS/Atom feeds"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "feedparser>=6.0",
+    "lxml>=4.9",
+    "python-dateutil>=2.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+secnews = "secnews.cli:main"
+
+[tool.setuptools]
+packages = ["secnews"]
+
+[tool.setuptools.dynamic]
+version = { attr = "secnews.__version__" }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
