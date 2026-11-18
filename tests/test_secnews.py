@@ -356,3 +356,19 @@ def test_csv_neutralises_formulas():
     row = list(_csv.reader(render([a], "csv").splitlines()))[1]
     assert row[1] == "'@src" and row[2].startswith("'=HYPERLINK") and row[6].startswith("'+cmd")
     assert list(_csv.reader(render([art("Normal title")], "csv").splitlines()))[1][2] == "Normal title"
+
+
+@pytest.mark.parametrize("args", [
+    ["--limit", "0"], ["--limit", "-5"], ["--workers", "0"], ["--since", "-1"],
+    ["--since", "abc"], ["search", "x", "--limit", "0"],
+])
+def test_cli_rejects_non_positive_numbers(args, capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(args)
+    assert exc.value.code == 2
+    assert "error: argument" in capsys.readouterr().err
+
+
+def test_cli_accepts_positive_numbers():
+    ns = cli.build_parser().parse_args(["--limit", "5", "--workers", "2", "--since", "0.5"])
+    assert (ns.limit, ns.workers, ns.since) == (5, 2, 0.5)

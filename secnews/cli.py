@@ -61,6 +61,28 @@ def fill_missing_summaries(session, articles: list[Article], workers: int) -> No
         list(pool.map(work, todo))
 
 
+def positive_int(text: str) -> int:
+    """argparse type: a whole number greater than zero."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
+def positive_float(text: str) -> float:
+    """argparse type: a number greater than zero."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0, got {text}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="secnews",
@@ -77,25 +99,25 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("search", help="search articles saved in the database")
     s.add_argument("term")
     s.add_argument("--db", default="secnews.db")
-    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--limit", type=positive_int, default=50)
     s.add_argument("-f", "--format", choices=FORMATS, default="table")
 
     # Options for the default "fetch" action live on the main parser.
     g = p.add_argument_group("fetch options")
-    g.add_argument("--since", type=float, metavar="HOURS", help="only articles published in the last N hours")
+    g.add_argument("--since", type=positive_float, metavar="HOURS", help="only articles published in the last N hours")
     g.add_argument("-k", "--keyword", action="append", help="only articles mentioning this word (repeatable)")
     g.add_argument("-t", "--tag", action="append", choices=sorted(TAG_RULES), help="only articles with this tag (repeatable)")
     g.add_argument("--cve-only", action="store_true", help="only articles that mention a CVE ID")
     g.add_argument("-s", "--source", action="append", help="only use sources whose name contains this text (repeatable)")
     g.add_argument("--feed", action="append", metavar="NAME=URL", help="add an extra feed (repeatable)")
     g.add_argument("--sources-file", help="JSON file with a list of {name, url} sources (replaces defaults)")
-    g.add_argument("-n", "--limit", type=int, help="maximum number of articles to output")
+    g.add_argument("-n", "--limit", type=positive_int, help="maximum number of articles to output")
     g.add_argument("-f", "--format", choices=FORMATS, default="table")
     g.add_argument("-o", "--output", help="write to this file instead of stdout")
     g.add_argument("--db", help="SQLite file to archive articles in (enables --new-only)")
     g.add_argument("--new-only", action="store_true", help="only output articles not already in --db")
     g.add_argument("--enrich", action="store_true", help="fetch article pages to fill in missing summaries")
-    g.add_argument("--workers", type=int, default=6, help="parallel downloads (default 6)")
+    g.add_argument("--workers", type=positive_int, default=6, help="parallel downloads (default 6)")
     return p
 
 
